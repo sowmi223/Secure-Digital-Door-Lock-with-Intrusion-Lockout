@@ -1,0 +1,167 @@
+module secure_door_lock #(
+    parameter CLOCK_HZ = 10,
+    parameter ACCESS_SECONDS = 2,
+    parameter ERROR_SECONDS = 1,
+    parameter LOCKOUT_SECONDS = 3
+)(
+    input wire clk,
+    input wire reset_n,
+    input wire [3:0] password_in,
+
+    output reg LOCKED,
+    output reg ACCESS,
+    output reg ERROR,
+    output reg ALARM
+);
+
+    localparam [3:0] PASSWORD = 4'b1011;
+
+    localparam [1:0] WAIT_INPUT = 2'd0,
+                     ACCESS_ST  = 2'd1,
+                     ERROR_ST   = 2'd2,
+                     LOCKOUT_ST = 2'd3;
+
+    reg [1:0] state;
+    reg [1:0] wrong_attempts;
+    reg [3:0] previous_password;
+    reg [31:0] timer_count;
+
+    localparam [31:0] ACCESS_TICKS =
+                         CLOCK_HZ * ACCESS_SECONDS;
+    localparam [31:0] ERROR_TICKS =
+                         CLOCK_HZ * ERROR_SECONDS;
+    localparam [31:0] LOCKOUT_TICKS =
+                         CLOCK_HZ * LOCKOUT_SECONDS;
+
+    always @(posedge clk or negedge reset_n) begin
+        if (!reset_n) begin
+            state             <= WAIT_INPUT;
+            wrong_attempts    <= 2'd0;
+            previous_password <= 4'b0000;
+            timer_count       <= 32'd0;
+
+            LOCKED <= 1'b1;
+            ACCESS <= 1'b0;
+            ERROR  <= 1'b0;
+            ALARM  <= 1'b0;
+        end else begin
+
+            case (state)
+
+                // Wait for a new password value
+                WAIT_INPUT: begin
+                    LOCKED <= 1'b1;
+                    ACCESS <= 1'b0;
+                    ERROR  <= 1'b0;
+                    ALARM  <= 1'b0;
+                    timer_count <= 32'd0;
+
+                    if (password_in != previous_password) begin
+                        previous_password <= password_in;
+                        timer_count <= 32'd0;
+
+                        if (password_in == PASSWORD) begin
+                            // Correct password
+                            state <= ACCESS_ST;
+                            wrong_attempts <= 2'd0;
+
+                            LOCKED <= 1'b0;
+                            ACCESS <= 1'b1;
+                        end else begin
+                            // Wrong password
+                            if (wrong_attempts >= 2'd2) begin
+                                // Third consecutive failure
+                                wrong_attempts <= 2'd3;
+                                state <= LOCKOUT_ST;
+
+                                LOCKED <= 1'b1;
+                                ACCESS <= 1'b0;
+                                ERROR  <= 1'b0;
+                                ALARM  <= 1'b1;
+                            end else begin
+                                wrong_attempts <=
+                                    wrong_attempts + 1'b1;
+                                state <= ERROR_ST;
+
+                                LOCKED <= 1'b1;
+                                ACCESS <= 1'b0;
+                                ERROR  <= 1'b1;
+                                ALARM  <= 1'b0;
+                            end
+                        end
+                    end
+                end
+
+                // Access remains active for the set duration.
+                // Password changes during access are checked afterward.
+                ACCESS_ST: begin
+                    LOCKED <= 1'b0;
+                    ACCESS <= 1'b1;
+                    ERROR  <= 1'b0;
+                    ALARM  <= 1'b0;
+
+                    if (timer_count >= ACCESS_TICKS - 1) begin
+                        timer_count <= 32'd0;
+                        state <= WAIT_INPUT;
+
+                        LOCKED <= 1'b1;
+                        ACCESS <= 1'b0;
+                    end else begin
+                        timer_count <= timer_count + 1'b1;
+                    end
+                end
+
+                // Show error, then check the latest input again
+                ERROR_ST: begin
+                    LOCKED <= 1'b1;
+                    ACCESS <= 1'b0;
+                    ERROR  <= 1'b1;
+                    ALARM  <= 1'b0;
+
+                    if (timer_count >= ERROR_TICKS - 1) begin
+                        timer_count <= 32'd0;
+                        state <= WAIT_INPUT;
+                        ERROR <= 1'b0;
+                    end else begin
+                        timer_count <= timer_count + 1'b1;
+                    end
+                end
+
+                // Lockout: ignore password changes until timeout
+                LOCKOUT_ST: begin
+                    LOCKED <= 1'b1;
+                    ACCESS <= 1'b0;
+                    ERROR  <= 1'b0;
+                    ALARM  <= 1'b1;
+
+                    // Remember inputs during lockout so they
+                    // cannot be used to bypass the lockout.
+                    previous_password <= password_in;
+
+                    if (timer_count >= LOCKOUT_TICKS - 1) begin
+                        timer_count <= 32'd0;
+                        wrong_attempts <= 2'd0;
+                        state <= WAIT_INPUT;
+                        ALARM <= 1'b0;
+                    end else begin
+                        timer_count <= timer_count + 1'b1;
+                    end
+                end
+
+                default: begin
+                    state <= WAIT_INPUT;
+                    wrong_attempts <= 2'd0;
+                    previous_password <= password_in;
+                    timer_count <= 32'd0;
+
+                    LOCKED <= 1'b1;
+                    ACCESS <= 1'b0;
+                    ERROR  <= 1'b0;
+                    ALARM  <= 1'b0;
+                end
+
+            endcase
+        end
+    end
+
+endmodule
